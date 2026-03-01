@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>X-Fighter</title>
+    <style>
+        :root {
+            --primary: #3498db;
+            --danger: #e74c3c;
+            --accent: #8e44ad;
+            --bg-dark: #0a0a0a;
+            --canvas-bg: #001a26;
+            --frame-color: #2c3e50;
+            --glow: 0 0 25px rgba(52, 152, 219, 0.4);
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg-dark);
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            touch-action: none;
+        }
+
+        #game-container {
+            position: relative;
+            padding: 20px;
+            background: linear-gradient(145deg, #1a1a1a, #333);
+            border: 6px solid #444;
+            border-radius: 15px;
+            box-shadow: 0 0 60px rgba(0,0,0,0.9), inset 0 0 15px rgba(255,255,255,0.05);
+        }
+
+        canvas {
+            background: var(--canvas-bg);
+            border: 3px solid var(--primary);
+            box-shadow: var(--glow);
+            display: block;
+            max-width: 95vw;
+            max-height: 85vh;
+            image-rendering: pixelated;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px; left: 20px; 
+            width: calc(100% - 40px); 
+            height: calc(100% - 40px);
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        .hud {
+            padding: 20px;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            font-size: 1.2rem;
+            text-shadow: 2px 2px #000;
+        }
+
+        .fuel-container {
+            width: 180px;
+            height: 10px;
+            background: rgba(255,255,255,0.1);
+            border: 2px solid white;
+            margin-top: 5px;
+            overflow: hidden;
+        }
+
+        #fuelBar { width: 100%; height: 100%; background: #00ff00; transition: width 0.1s; }
+
+        .overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            text-align: center;
+            pointer-events: all;
+        }
+
+        h1 { font-size: 3rem; color: var(--danger); margin: 0; text-transform: uppercase; letter-spacing: 5px; }
+        
+        .menu-btns { display: flex; flex-direction: column; gap: 15px; margin-top: 30px; }
+
+        .btn {
+            background: var(--primary);
+            border: none;
+            color: white;
+            padding: 15px 40px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            font-weight: 800;
+            border-bottom: 4px solid rgba(0,0,0,0.3);
+            transition: transform 0.1s;
+            width: 280px;
+        }
+
+        .btn:hover { filter: brightness(1.1); }
+        .btn:active { transform: translateY(2px); border-bottom-width: 2px; }
+        .btn-hard { background: var(--danger); }
+        .btn-insane { background: var(--accent); animation: glow 1.5s infinite; }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <div id="ui-layer">
+            <div id="hud" class="hud hidden">
+                SCORE: <span id="scoreVal">0</span><br>
+                FUEL
+                <div class="fuel-container"><div id="fuelBar"></div></div>
+            </div>
+        </div>
+
+        <div id="menu" class="overlay">
+            <h1 id="title">X Fighter</h1>
+            <p id="msg">Wähle deinen Schwierigkeitsgrad</p>
+            <div class="menu-btns">
+                <button class="btn" data-diff="easy">Anfänger</button>
+                <button class="btn btn-hard" data-diff="hard">Pilot</button>
+                <button class="btn btn-insane" data-diff="insane">MIG-29 PILOT</button>
+            </div>
+        </div>
+
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+<script>
+    const CONFIG = {
+        WIDTH: 600,
+        HEIGHT: 800,
+        DIFFICULTIES: {
+            easy:   { spawn: 0.03, speed: 4.0, drain: 0.12 },
+            hard:   { spawn: 0.06, speed: 6.5, drain: 0.15 },
+            insane: { spawn: 0.12, speed: 9.5, drain: 0.20 }
+        }
+    };
+
+    class Game {
+        constructor() {
+            this.canvas = document.getElementById('gameCanvas');
+            this.ctx = this.canvas.getContext('2d');
+            this.canvas.width = CONFIG.WIDTH;
+            this.canvas.height = CONFIG.HEIGHT;
+            
+            this.state = 'MENU';
+            this.score = 0;
+            this.fuel = 100;
+            this.entities = { player: null, enemies: [], items: [] };
+            this.params = CONFIG.DIFFICULTIES.easy;
+
+            this.initEventListeners();
+        }
+
+        initEventListeners() {
+            document.querySelectorAll('.btn').forEach(btn => {
+                btn.onclick = () => this.start(btn.dataset.diff);
+            });
+
+            const updatePos = (e) => {
+                if (this.state !== 'PLAYING') return;
+                const rect = this.canvas.getBoundingClientRect();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const scaleX = CONFIG.WIDTH / rect.width;
+                this.entities.player.targetX = (clientX - rect.left) * scaleX - 20;
+            };
+
+            window.addEventListener('mousemove', updatePos);
+            window.addEventListener('touchmove', updatePos, {passive: false});
+        }
+
+        start(diffKey) {
+            this.params = CONFIG.DIFFICULTIES[diffKey];
+            this.state = 'PLAYING';
+            this.score = 0;
+            this.fuel = 100;
+            this.entities.enemies = [];
+            this.entities.items = [];
+            this.entities.player = new Player();
+            
+            document.getElementById('menu').classList.add('hidden');
+            document.getElementById('hud').classList.remove('hidden');
+            
+            this.loop();
+        }
+
+        gameOver() {
+            this.state = 'GAMEOVER';
+            document.getElementById('menu').classList.remove('hidden');
+            document.getElementById('title').innerText = "Vorbei!";
+            document.getElementById('msg').innerHTML = `Score: ${this.score}<br>Nochmal?`;
+        }
+
+        update() {
+            if (this.state !== 'PLAYING') return;
+
+            this.fuel -= this.params.drain;
+            if (this.fuel <= 0) { this.gameOver(); return; }
+
+            document.getElementById('fuelBar').style.width = `${this.fuel}%`;
+            document.getElementById('fuelBar').style.background = this.fuel < 30 ? 'var(--danger)' : '#00ff00';
+            document.getElementById('scoreVal').innerText = this.score;
+
+            this.entities.player.update();
+
+            if (Math.random() < this.params.spawn) this.entities.enemies.push(new Enemy(this.params.speed));
+            if (Math.random() < 0.022) this.entities.items.push(new FuelItem(this.params.speed));
+
+            this.entities.enemies = this.entities.enemies.filter(enemy => {
+                enemy.update(this.entities.enemies);
+                if (enemy.collidesWith(this.entities.player)) {
+                    this.gameOver();
+                    return false;
+                }
+                if (enemy.y > CONFIG.HEIGHT) {
+                    this.score += 1;
+                    return false;
+                }
+                return true;
+            });
+
+            this.entities.items = this.entities.items.filter(item => {
+                item.update();
+                if (item.collidesWith(this.entities.player)) {
+                    this.fuel = Math.min(100, this.fuel + 35);
+                    return false;
+                }
+                return item.y <= CONFIG.HEIGHT;
+            });
+        }
+
+        draw() {
+            this.ctx.clearRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+            
+            this.ctx.fillStyle = "rgba(255,255,255,0.15)";
+            for(let i=0; i<30; i++) {
+                this.ctx.fillRect((Date.now()/15 + i*130)%600, (Date.now()/8 + i*220)%800, 2, 2);
+            }
+
+            this.entities.items.forEach(item => item.draw(this.ctx));
+            this.entities.enemies.forEach(enemy => enemy.draw(this.ctx));
+            if (this.entities.player) this.entities.player.draw(this.ctx);
+        }
+
+        loop() {
+            if (this.state !== 'PLAYING') return;
+            this.update();
+            this.draw();
+            requestAnimationFrame(() => this.loop());
+        }
+    }
+
+    class Entity {
+        constructor(x, y, w, h) {
+            this.x = x; this.y = y; this.w = w; this.h = h;
+        }
+        collidesWith(other) {
+            return this.x < other.x + other.w && this.x + this.w > other.x &&
+                   this.y < other.y + other.h && this.y + this.h > other.y;
+        }
+    }
+
+    class Player extends Entity {
+        constructor() {
+            super(CONFIG.WIDTH / 2 - 20, 700, 40, 45);
+            this.targetX = this.x;
+        }
+        update() {
+            this.x += (this.targetX - this.x) * 0.15;
+            this.x = Math.max(0, Math.min(CONFIG.WIDTH - this.w, this.x));
+        }
+        draw(ctx) {
+            ctx.fillStyle = '#2ecc71';
+            ctx.fillRect(this.x + 15, this.y, 10, 45);
+            ctx.fillRect(this.x, this.y + 15, 40, 8);
+            ctx.fillRect(this.x + 10, this.y + 38, 20, 5);
+            ctx.fillStyle = '#00FFFF';
+            ctx.fillRect(this.x + 18, this.y + 5, 4, 8);
+        }
+    }
+
+    class Enemy extends Entity {
+        constructor(baseSpeed) {
+            super(Math.random() * (CONFIG.WIDTH - 40), -60, 40, 45);
+            this.speed = baseSpeed + Math.random() * 2;
+        }
+        update(allEnemies) {
+            this.y += this.speed;
+            allEnemies.forEach(other => {
+                if (this !== other && Math.abs(this.x - other.x) < 40 && Math.abs(this.y - other.y) < 60) {
+                    this.x += this.x < other.x ? -1.5 : 1.5;
+                }
+            });
+        }
+        draw(ctx) {
+            ctx.fillStyle = '#c0392b';
+            ctx.fillRect(this.x + 15, this.y, 10, 45);
+            ctx.fillRect(this.x, this.y + 15, 40, 8);
+            ctx.fillRect(this.x + 10, this.y, 20, 5);
+            ctx.fillStyle = '#f1c40f';
+            ctx.fillRect(this.x + 18, this.y + 30, 4, 8);
+        }
+    }
+
+    class FuelItem extends Entity {
+        constructor(gameSpeed) {
+            super(Math.random() * (CONFIG.WIDTH - 20), -30, 25, 25);
+            this.speed = gameSpeed * 0.8;
+        }
+        update() { this.y += this.speed; }
+        draw(ctx) {
+            ctx.fillStyle = '#f1c40f';
+            ctx.fillRect(this.x, this.y, 25, 25);
+            ctx.fillStyle = '#e74c3c';
+            ctx.fillRect(this.x + 18, this.y - 4, 5, 4);
+            ctx.fillStyle = '#000';
+            ctx.font = "bold 16px Arial";
+            ctx.fillText('F', this.x + 7, this.y + 18);
+        }
+    }
+
+    const fighterGame = new Game();
+</script>
+</body>
+</html>
